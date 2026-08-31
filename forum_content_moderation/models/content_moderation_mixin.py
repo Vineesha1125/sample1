@@ -27,11 +27,23 @@ DEFAULT_NSFW_SERVICE_URL = 'http://localhost:5001/check-image'
 HARMFUL_IMAGE_CATEGORIES = ('Porn', 'Hentai', 'Sexy')
 LEET_SUBSTITUTIONS = {'0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '@': 'a', '$': 's'}
 
+# Simple keyword-based illegal content detection.
+# This is separate from toxicity scoring - toxicity measures TONE
+# (hostility, insults, threats), this measures SUBJECT MATTER. A calmly
+# worded illegal post scores near-zero on toxicity but should still be
+# caught here. This is a basic first pass, not a substitute for a proper
+# content-category classifier - expand this list or replace with a real
+# classifier (e.g. an external moderation API) as coverage needs grow.
+ILLEGAL_TEXT_KEYWORDS = (
+    'unlicensed firearm', 'weapon sale', 'drug sale', 'counterfeit',
+    'trafficking', 'stolen goods', 'hacking service', 'fake id',
+)
+
 
 class ContentModerationMixin(models.AbstractModel):
     """Shared, model-agnostic content moderation service.
 
-    Public entry points — check_text() and check_image_bytes() — always
+    Public entry points â€” check_text() and check_image_bytes() â€” always
     fail open by default (raise_on_error=False): on an internal error
     they log it and return (None, None), matching the system's
     documented fail-open design for real content creation. Pass
@@ -40,7 +52,7 @@ class ContentModerationMixin(models.AbstractModel):
     treating a failed check as "clean".
 
     Internally, each public method delegates to a raw "_score_..."
-    method that always raises on failure and never applies thresholds —
+    method that always raises on failure and never applies thresholds â€”
     this keeps the fail-open/fail-closed decision in exactly one place
     per check, rather than duplicated across every caller.
     """
@@ -90,6 +102,13 @@ class ContentModerationMixin(models.AbstractModel):
         block_threshold, review_threshold = self._get_text_thresholds()
 
         try:
+            # Illegal subject-matter check runs first and independently of
+            # the toxicity score - a calmly worded illegal post would
+            # otherwise score near-zero on toxicity and pass through.
+            matched_terms = self._score_illegal_text(text)
+            if matched_terms:
+                return 'block', f"Text flagged as illegal content (matched: {', '.join(matched_terms)})"
+
             worst_category, worst_score, _all_scores = self._score_text_toxicity(text)
 
             if worst_category is None:
@@ -105,8 +124,15 @@ class ContentModerationMixin(models.AbstractModel):
                 raise
             return None, None
 
+    def _score_illegal_text(self, text):
+        """Raw scorer for illegal subject-matter keywords. Separate from
+        toxicity - this checks WHAT is being said, not HOW aggressively
+        it's phrased. Returns a list of matched terms (empty if none)."""
+        lowered = text.lower()
+        return [kw for kw in ILLEGAL_TEXT_KEYWORDS if kw in lowered]
+
     def _score_text_toxicity(self, text):
-        """Raw scorer. Raises on model failure — never catches, never
+        """Raw scorer. Raises on model failure â€” never catches, never
         applies thresholds. Returns (worst_category, worst_score, all_scores)."""
         if not text or not text.strip():
             return None, 0.0, {}
@@ -166,7 +192,7 @@ class ContentModerationMixin(models.AbstractModel):
             chunks.append(' '.join(current))
 
         # Fallback: a single "word" longer than max_chars (e.g. a URL or
-        # spam string with no spaces) — hard-slice it so it still gets
+        # spam string with no spaces) â€” hard-slice it so it still gets
         # scored instead of being skipped entirely.
         final_chunks = []
         for chunk in chunks:
@@ -187,9 +213,16 @@ class ContentModerationMixin(models.AbstractModel):
         block_threshold, review_threshold = self._get_image_thresholds()
 
         try:
-            worst_category, worst_score, _all_probs = self._score_image_nsfw(
-                image_bytes, filename, mimetype
-            )
+            result = self._call_nsfw_service(image_bytes, filename, mimetype)
+
+            # If the service explicitly flagged the image (e.g. via an
+            # illegal-content category check on the service side) and gave
+            # us a ready-made reason, use it directly rather than trying to
+            # force it through the probability/threshold path below.
+            if result.get('flagged') is True and result.get('reason'):
+                return 'block', result['reason']
+
+            worst_category, worst_score, _all_probs = self._score_image_nsfw(result)
 
             if worst_category is None:
                 return None, None
@@ -204,9 +237,9 @@ class ContentModerationMixin(models.AbstractModel):
                 raise
             return None, None
 
-    def _score_image_nsfw(self, image_bytes, filename, mimetype):
-        """Raw scorer. Raises on failure (bad response, timeout, connection
-        error, unrecognized shape) — never applies thresholds."""
+    def _call_nsfw_service(self, image_bytes, filename, mimetype):
+        """Raw HTTP call to the external image moderation service. Raises
+        on failure (bad response, timeout, connection error)."""
         files = {'image': (filename, image_bytes, mimetype)}
         response = requests.post(
             self._get_nsfw_service_url(),
@@ -214,8 +247,11 @@ class ContentModerationMixin(models.AbstractModel):
             timeout=10
         )
         response.raise_for_status()
-        result = response.json()
+        return response.json()
 
+    def _score_image_nsfw(self, result):
+        """Raw scorer. Raises on failure (unrecognized shape) â€” never
+        applies thresholds. Takes the already-parsed JSON response."""
         probs = self._parse_nsfw_response(result)
 
         harmful_probs = {k: v for k, v in probs.items() if k in HARMFUL_IMAGE_CATEGORIES}
@@ -231,6 +267,10 @@ class ContentModerationMixin(models.AbstractModel):
         {className: probability} dict, accepting either shape:
           - {'probabilities': {'Porn': 0.9, ...}}
           - {'predictions': [{'className': 'Porn', 'probability': 0.9}, ...]}
+        If neither shape is present (e.g. the response only carried a
+        top-level 'flagged'/'reason' pair, already handled upstream in
+        check_image_bytes), returns an empty dict rather than raising -
+        that's a valid "nothing to score here" case, not malformed data.
         """
         if isinstance(result.get('probabilities'), dict):
             return result['probabilities']
@@ -248,8 +288,12 @@ class ContentModerationMixin(models.AbstractModel):
                 )
                 raise ValueError("Malformed 'predictions' entries in NSFW response")
 
+        if 'flagged' in result:
+            # Already handled explicitly in check_image_bytes via the
+            # 'reason' short-circuit; nothing left to score numerically.
+            return {}
+
         _logger.error(
-            "NSFW service response matched neither 'probabilities' (dict) "
-            "nor 'predictions' (list) shape: %r", result
+            "NSFW service response matched no recognized shape: %r", result
         )
         raise ValueError("Unrecognized NSFW service response shape")
