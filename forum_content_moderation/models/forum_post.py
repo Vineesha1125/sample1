@@ -24,6 +24,39 @@ class ForumPost(models.Model):
         icp = self.env['ir.config_parameter'].sudo()
         return icp.get_param(PARAM_ODOO_BASE_URL, default=None) or DEFAULT_ODOO_BASE_URL
 
+    def _is_safe_external_url(self, url):
+        """Blocks SSRF: rejects URLs resolving to private, loopback, link-local,
+        or cloud-metadata IP ranges before the server makes a request to them."""
+        import ipaddress
+        import socket
+        from urllib.parse import urlparse
+
+        try:
+            parsed = urlparse(url)
+            if parsed.scheme not in ('http', 'https'):
+                return False
+            hostname = parsed.hostname
+            if not hostname:
+                return False
+
+            resolved_ip = socket.gethostbyname(hostname)
+            ip_obj = ipaddress.ip_address(resolved_ip)
+
+            if (
+                ip_obj.is_private
+                or ip_obj.is_loopback
+                or ip_obj.is_link_local
+                or ip_obj.is_reserved
+                or ip_obj.is_multicast
+                or str(ip_obj) == '169.254.169.254'
+            ):
+                return False
+
+            return True
+        except Exception as e:
+            _logger.warning("Failed to validate external URL safety for %s: %s", url, e)
+            return False
+
     # ------------------------------------------------------------------
     # Admin notification and actions
     # ------------------------------------------------------------------
@@ -282,11 +315,14 @@ class ForumPost(models.Model):
                 except Exception as e:
                     _logger.error("Failed to inspect linked attachment %s: %s", att.id, e)
 
-        # 2d. External image URLs
+        # 2d. External image URLs (SSRF-guarded: blocks private/internal/link-local IPs)
         external_images = re.findall(r'<img[^>]+src=["\'](https?://[^"\']+)["\']', content)
         odoo_base = self._get_odoo_base_url().rstrip('/')
         for ext_url in external_images:
             if ext_url.startswith(odoo_base) or 'localhost:8069' in ext_url or '127.0.0.1:8069' in ext_url:
+                continue
+            if not self._is_safe_external_url(ext_url):
+                _logger.warning("Blocked potentially unsafe external image URL: %s", ext_url)
                 continue
             try:
                 img_resp = requests.get(ext_url, timeout=5)
