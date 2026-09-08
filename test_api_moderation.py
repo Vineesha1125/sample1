@@ -1,14 +1,25 @@
 import xmlrpc.client
 import time
 import base64
+import os
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # -----------------------------
 # ODOO CONFIGURATION
 # -----------------------------
-url = "http://localhost:8069"
-db = "mydatabase"
-username = "admin"  # <-- CHANGED: matches the account the API key was generated under
-api_key = "03ccfb36462f6d8f654465d871d8552405eda63c"
+url = os.environ.get("ODOO_URL")
+db = os.environ.get("ODOO_DB")
+username = os.environ.get("ODOO_USERNAME")
+api_key = os.environ.get("ODOO_API_KEY")
+
+if not all([url, db, username, api_key]):
+    raise RuntimeError(
+        "Missing required environment variables. "
+        "Check that .env exists and contains ODOO_URL, ODOO_DB, "
+        "ODOO_USERNAME, and ODOO_API_KEY."
+    )
 
 # Help forum
 forum_id = 1
