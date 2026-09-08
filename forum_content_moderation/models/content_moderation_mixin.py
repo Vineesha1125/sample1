@@ -10,12 +10,6 @@ _logger = logging.getLogger(__name__)
 # Loaded ONCE at Odoo start-up, shared by every caller of this service.
 _text_model = Detoxify('original')
 
-# Zero-shot classifier: scores text against arbitrary candidate labels by
-# MEANING rather than literal keyword match. This is what actually closes
-# the gap keyword matching cannot: "weapon transaction", "weapon deal",
-# "arrange a firearm exchange" etc. all score similarly to "weapon sale"
-# here, without needing every phrasing listed manually. Runs entirely
-# locally - no API key, no network call, no billing account required.
 _illegal_classifier = pipeline(
     "zero-shot-classification",
     model="facebook/bart-large-mnli"
@@ -29,23 +23,10 @@ ILLEGAL_CATEGORY_LABELS = (
     "human trafficking",
     "stolen goods sale",
     "sale or arrangement of illegal or prohibited items",
-    "normal conversation",  # included so the model has a genuine "none of the above" option
+    "normal conversation",
 )
 
-# Score above which a non-"normal conversation" top label triggers a block.
-# Zero-shot scores are less sharply separated than a purpose-trained
-# classifier's, so this is intentionally a bit lower than the toxicity
-# block threshold below - tune via testing against real examples.
 ILLEGAL_SEMANTIC_THRESHOLD = 0.65
-
-# Fallback signal: if the model is confident this ISN'T normal conversation
-# (low score here) but no single illegal category crosses the block
-# threshold above, the probability mass is likely spread across several
-# related categories rather than concentrated in one - e.g. vague phrasing
-# like "prohibited goods" scores moderately on drugs/weapons/counterfeit
-# simultaneously rather than strongly on any one. This routes that
-# ambiguous-but-clearly-not-normal case to review instead of letting it
-# pass silently.
 NORMAL_CONVERSATION_LOW_CONFIDENCE = 0.15
 
 DEFAULT_TEXT_BLOCK_THRESHOLD = 0.85
@@ -61,11 +42,6 @@ PARAM_IMAGE_REVIEW = 'forum_content_moderation.image_review_threshold'
 HARMFUL_IMAGE_CATEGORIES = ('Porn', 'Hentai', 'Sexy')
 LEET_SUBSTITUTIONS = {'0': 'o', '1': 'i', '3': 'e', '4': 'a', '5': 's', '@': 'a', '$': 's'}
 
-# Keyword-based illegal subject-matter detection. Kept as a fast, cheap
-# first-pass check that runs before the (slower) zero-shot classifier
-# below - an exact match short-circuits immediately without needing a
-# model inference call. The classifier is the real catch-all; this list
-# is a fast path for the most common exact phrasings.
 ILLEGAL_TEXT_KEYWORDS = (
     'unlicensed firearm', 'weapon sale', 'drug sale', 'counterfeit',
     'trafficking', 'stolen goods', 'hacking service', 'fake id',
@@ -83,29 +59,9 @@ ILLEGAL_TEXT_KEYWORDS = (
 
 
 class ContentModerationMixin(models.AbstractModel):
-    """Shared, model-agnostic content moderation service.
-
-    This holds NO knowledge of forum posts, attachments, or any other
-    specific model. Any Odoo model can inherit this mixin to gain
-    check_text()/check_image_bytes(), or any code can call it directly
-    via self.env['content.moderation.mixin'].check_text(...) without
-    needing a real record of any kind — including from a standalone API
-    endpoint, as in custom_forum_api.
-
-    All checks default to fail-open (raise_on_error=False): on an
-    internal error, they log it and return (None, None) rather than
-    raising, so a moderation-service problem never blocks whatever the
-    caller is trying to do. Pass raise_on_error=True when the caller
-    itself needs to know a check genuinely failed (e.g. a standalone
-    moderation-check API responding to an external system) rather than
-    silently treating a failed check as "clean".
-    """
     _name = 'content.moderation.mixin'
     _description = 'Shared Content Moderation Service'
 
-    # ------------------------------------------------------------------
-    # Threshold lookups
-    # ------------------------------------------------------------------
     def _get_threshold(self, param_key, default_value):
         icp = self.env['ir.config_parameter'].sudo()
         raw = icp.get_param(param_key, default=None)
@@ -130,23 +86,15 @@ class ContentModerationMixin(models.AbstractModel):
         review = self._get_threshold(PARAM_IMAGE_REVIEW, DEFAULT_IMAGE_REVIEW_THRESHOLD)
         return block, review
 
-    # ------------------------------------------------------------------
-    # Text moderation (model-agnostic)
-    # ------------------------------------------------------------------
     def check_text(self, text, raise_on_error=False):
-        """Checks a plain text string. Returns ('block' | 'review' | None, reason).
-        Callers are responsible for combining/stripping HTML from any
-        model-specific fields (e.g. title + body) before calling this."""
         text = (text or '').strip()
         if not text:
             return None, None
 
-        # 1. Fast keyword pass - exact phrasing, near-zero cost.
         illegal_matches = self._score_illegal_text_keywords(text)
         if illegal_matches:
             return 'block', f"Text flagged as illegal content (matched: {', '.join(illegal_matches)})"
 
-        # 2. Semantic pass - catches rephrasing the keyword list misses.
         try:
             semantic_level, semantic_label, semantic_score = self._score_illegal_text_semantic(text)
             if semantic_level == 'block':
@@ -154,12 +102,8 @@ class ContentModerationMixin(models.AbstractModel):
             if semantic_level == 'review':
                 return 'review', f"Text borderline for illegal content (model confidence this is normal conversation: {semantic_score:.2f})"
         except Exception as e:
-            # Fail OPEN on classifier failure, consistent with the rest
-            # of this module's error handling - a classifier outage
-            # should not block legitimate posts.
             _logger.error("Illegal-content semantic check failed: %s", e)
 
-        # 3. Toxicity (tone) check - unchanged from before.
         block_threshold, review_threshold = self._get_text_thresholds()
 
         try:
@@ -177,22 +121,10 @@ class ContentModerationMixin(models.AbstractModel):
             return None, None
 
     def _score_illegal_text_keywords(self, text):
-        """Raw scorer for illegal subject-matter keywords. Case-insensitive,
-        literal-match only. Returns a list of matched terms (empty if none)."""
         lowered = text.lower()
         return [kw for kw in ILLEGAL_TEXT_KEYWORDS if kw in lowered]
 
     def _score_illegal_text_semantic(self, text):
-        """Zero-shot classification against illegal-content category labels.
-        Returns (level, label, score):
-          - ('block', label, score) if a specific illegal category crosses
-            the block threshold.
-          - ('review', None, normal_conv_score) if no single category
-            dominates, but the model is confident this ISN'T normal
-            conversation either (probability spread across several
-            related categories - common for vague/generic phrasing).
-          - (None, None, None) if this looks like normal conversation.
-        Raises on model failure - caller decides fail-open handling."""
         result = _illegal_classifier(text, candidate_labels=list(ILLEGAL_CATEGORY_LABELS))
         labels = result['labels']
         scores = result['scores']
@@ -241,11 +173,7 @@ class ContentModerationMixin(models.AbstractModel):
             return []
         return [text[i:i + max_chars] for i in range(0, len(text), max_chars)]
 
-    # ------------------------------------------------------------------
-    # Image moderation (model-agnostic)
-    # ------------------------------------------------------------------
     def check_image_bytes(self, image_bytes, filename='upload.png', mimetype='image/png', raise_on_error=False):
-        """Checks raw image bytes. Returns ('block' | 'review' | None, reason)."""
         block_threshold, review_threshold = self._get_image_thresholds()
 
         try:

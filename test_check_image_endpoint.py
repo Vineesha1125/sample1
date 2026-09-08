@@ -1,7 +1,7 @@
 import base64
 import requests
 
-with open(r"C:\Users\HP\Desktop\dealwallet\test.png", "rb") as f:
+with open("test.png", "rb") as f:
     image_data = base64.b64encode(f.read()).decode()
 
 r = requests.post(

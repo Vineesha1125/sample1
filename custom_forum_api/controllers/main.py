@@ -46,7 +46,7 @@ class WebsiteForumModerationNotice(WebsiteForum):
 
 class ModerationCheckController(http.Controller):
 
-    @http.route('/api/moderation/check-text', type='jsonrpc', auth='public', methods=['POST'], csrf=False)
+    @http.route('/api/moderation/check-text', type='jsonrpc', auth='user', methods=['POST'], csrf=False)
     def check_text(self, **kwargs):
         text = kwargs.get('text', '')
         if not text:
@@ -65,7 +65,7 @@ class ModerationCheckController(http.Controller):
             'reason': reason or 'No issues detected',
         }
 
-    @http.route('/api/moderation/check-image', type='jsonrpc', auth='public', methods=['POST'], csrf=False)
+    @http.route('/api/moderation/check-image', type='jsonrpc', auth='user', methods=['POST'], csrf=False)
     def check_image(self, **kwargs):
         image_b64 = kwargs.get('image_base64', '')
         filename = kwargs.get('filename', 'upload.png')

@@ -137,5 +137,5 @@ server {
 | `forum_content_moderation.odoo_base_url` | `http://localhost:8069` | Internal base URL for resolving external image links |
 | `forum_content_moderation.text_block_threshold` | `0.85` | Toxicity score above which post is held in pending |
 | `forum_content_moderation.text_review_threshold` | `0.70` | Borderline toxicity threshold |
-| `forum_content_moderation.image_block_threshold` | `0.60` | NSFW score above which post is held in pending |
-| `forum_content_moderation.image_review_threshold` | `0.40` | Borderline NSFW threshold |
+| `forum_content_moderation.image_block_threshold` | `0.75` | NSFW score above which post is held in pending |
+| `forum_content_moderation.image_review_threshold` | `0.60` | Borderline NSFW threshold |
