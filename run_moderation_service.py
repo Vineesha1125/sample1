@@ -26,30 +26,47 @@ PORT = 8000
 # 1. MODERATION CONFIG & RULES
 # -------------------------------------------------------------
 ILLEGAL_TEXT_KEYWORDS = (
-    'unlicensed firearm', 'weapon sale', 'drug sale', 'counterfeit',
-    'trafficking', 'stolen goods', 'hacking service', 'fake id',
+    # Direct testing & generic illegal terms
+    'illegal', 'illicit', 'contraband', 'prohibited item', 'prohibited goods',
+    'prohibited content', 'illegal content', 'illegal text', 'illegal post',
+    'illegal goods', 'illegal item', 'illegal items', 'illegal substance',
+    'illegal test', 'illegal service', 'illegal trade', 'illegal deal',
+    'illegal sale', 'illegal sales', 'illegal market', 'illegal activity',
+    'banned item', 'banned goods', 'banned content', 'restricted goods',
+
+    # Weapons & Firearms
+    'unlicensed firearm', 'weapon sale', 'selling weapons', 'weapon transaction',
+    'weapon deal', 'weapon exchange', 'arrange a weapon', 'illegal weapon',
+    'black market weapon', 'restricted weapon', 'prohibited weapon',
     'selling a gun', 'selling gun', 'gun for sale', 'guns for sale',
+    'selling firearm', 'firearm for sale', 'selling a pistol', 'selling a rifle',
+    'unregistered gun', 'ghost gun', 'ammo for sale', 'untraceable gun',
     'no license needed', 'no license required', 'no background check',
-    'selling firearm', 'firearm for sale', 'illegal weapon',
-    'selling a pistol', 'selling a rifle', 'unregistered gun',
     'cash only no questions', 'no paperwork needed',
-    'prohibited weapon', 'weapon transaction', 'weapon deal',
-    'weapon exchange', 'arrange a weapon', 'illegal firearm',
-    'black market weapon', 'restricted weapon',
-    'prohibited goods', 'prohibited item', 'illegal goods',
-    'banned item', 'restricted goods', 'contraband',
+
+    # Drugs & Controlled Substances
+    'drug sale', 'selling drugs', 'buy drugs', 'drug trafficking', 'trafficking',
+    'cocaine for sale', 'heroin for sale', 'meth for sale', 'weed for sale',
+    'pills for sale', 'narcotics for sale', 'illicit drugs',
+
+    # Counterfeits & Fraud & Stolen Goods
+    'counterfeit', 'counterfeit money', 'counterfeit goods', 'fake currency',
+    'fake id', 'fake passport', 'fake license', 'fake driver license',
+    'stolen goods', 'stolen items', 'stolen card', 'credit card fraud',
+    'cvv for sale', 'dump cards', 'hacking service', 'hack service',
+    'hire a hacker', 'hack account', 'human trafficking',
 )
 
 LEET_SUBSTITUTIONS = {
     '0': 'o', '1': 'i', '!': 'i', '3': 'e', '4': 'a', '@': 'a',
-    '5': 's', '$': 's', '7': 't', '+': 't', '8': 'b', 'v': 'u'
+    '5': 's', '$': 's', '7': 't', '+': 't', '8': 'b'
 }
 
-HARMFUL_IMAGE_CATEGORIES = ('Porn', 'Hentai', 'Sexy')
+EXPLICIT_IMAGE_CATEGORIES = ('Porn', 'Hentai')
+SAFE_IMAGE_CATEGORIES = ('Neutral', 'Drawing')
 
-# Try loading heavy ML models if available, fallback gracefully
+# Try loading Detoxify model, fallback gracefully
 _text_model = None
-_illegal_classifier = None
 
 try:
     from detoxify import Detoxify
@@ -58,14 +75,6 @@ try:
     print("[INIT] Detoxify loaded successfully.")
 except Exception as e:
     print(f"[WARN] Detoxify model not loaded ({e}). Rule-based checks active.")
-
-try:
-    from transformers import pipeline
-    print("[INIT] Loading Zero-Shot Classifier (facebook/bart-large-mnli)...")
-    _illegal_classifier = pipeline("zero-shot-classification", model="facebook/bart-large-mnli")
-    print("[INIT] Zero-Shot Classifier loaded successfully.")
-except Exception as e:
-    print(f"[WARN] Transformers model not loaded ({e}). Rule-based checks active.")
 
 # In-memory store for posts & admin notifications
 posts_db = []
@@ -84,29 +93,18 @@ def check_text_moderation(text):
     if not text:
         return None, None
 
-    # 1. Keyword + Leetspeak Check
+    # 1. Whole-word Keyword + Leetspeak Check for Prohibited / Illegal Items
     lowered = text.lower()
     normalized = normalize_text(text)
-    matched = [kw for kw in ILLEGAL_TEXT_KEYWORDS if kw in lowered or kw in normalized]
+    matched = []
+    for kw in ILLEGAL_TEXT_KEYWORDS:
+        pattern = rf'\b{re.escape(kw)}\b'
+        if re.search(pattern, lowered) or re.search(pattern, normalized):
+            matched.append(kw)
     if matched:
         return 'block', f"Text flagged as illegal content (matched: {', '.join(matched)})"
 
-    # 2. Semantic Zero-Shot Classifier Check
-    if _illegal_classifier:
-        try:
-            candidate_labels = [
-                "illegal weapon sale", "drug sale or trafficking", "counterfeit goods sale",
-                "hacking or cybercrime service", "human trafficking", "stolen goods sale",
-                "sale or arrangement of illegal items", "normal conversation"
-            ]
-            res = _illegal_classifier(text, candidate_labels=candidate_labels)
-            top_label, top_score = res['labels'][0], res['scores'][0]
-            if top_label != "normal conversation" and top_score >= 0.65:
-                return 'block', f"Text flagged as illegal content ({top_label}, confidence: {top_score:.2f})"
-        except Exception as e:
-            print(f"[ERROR] Zero-shot classification failed: {e}")
-
-    # 3. Detoxify Toxicity Check
+    # 2. Detoxify Toxicity & Abuse Check
     if _text_model:
         try:
             scores = _text_model.predict(text[:800])
@@ -125,7 +123,6 @@ def check_image_moderation(image_b64):
         return None, None
     try:
         image_bytes = base64.b64decode(image_b64.split(',')[-1])
-        # Call nsfw-service on port 5001
         boundary = '----WebKitFormBoundary7MA4YWxkTrZu0gW'
         body = (
             f'--{boundary}\r\n'
@@ -141,16 +138,38 @@ def check_image_moderation(image_b64):
         )
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode('utf-8'))
+            if data.get('flagged') is True and data.get('reason'):
+                return 'block', data['reason']
+
             predictions = data.get('predictions', [])
             probs = {p['className']: p['probability'] for p in predictions}
-            harmful = {k: v for k, v in probs.items() if k in HARMFUL_IMAGE_CATEGORIES}
-            if harmful:
-                worst_cat = max(harmful, key=harmful.get)
-                worst_score = harmful[worst_cat]
-                if worst_score >= 0.75:
-                    return 'block', f"Image flagged for {worst_cat} (score: {worst_score:.2f})"
-                elif worst_score >= 0.60:
-                    return 'review', f"Image borderline for {worst_cat} (score: {worst_score:.2f})"
+            if not probs:
+                return None, None
+
+            safe_score = probs.get('Neutral', 0.0) + probs.get('Drawing', 0.0)
+            porn_score = probs.get('Porn', 0.0)
+            hentai_score = probs.get('Hentai', 0.0)
+            sexy_score = probs.get('Sexy', 0.0)
+
+            worst_explicit_score = max(porn_score, hentai_score)
+            worst_explicit_cat = 'Porn' if porn_score >= hentai_score else 'Hentai'
+
+            # 1. High confidence explicit porn/hentai -> block
+            if worst_explicit_score >= 0.75:
+                return 'block', f"Image flagged for {worst_explicit_cat} (score: {worst_explicit_score:.2f})"
+            # 2. Borderline explicit porn/hentai -> review
+            elif worst_explicit_score >= 0.50:
+                return 'review', f"Image borderline for {worst_explicit_cat} (score: {worst_explicit_score:.2f})"
+
+            # 3. Dominant safe classes (Neutral / Drawing) -> Safe!
+            if safe_score >= 0.50 or probs.get('Neutral', 0.0) >= 0.40 or probs.get('Drawing', 0.0) >= 0.40:
+                if worst_explicit_score < 0.50 and sexy_score < 0.85:
+                    return None, None
+
+            # 4. High suggestive content -> review
+            if sexy_score >= 0.85:
+                return 'review', f"Image borderline for Sexy (score: {sexy_score:.2f})"
+
     except Exception as e:
         print(f"[WARN] NSFW microservice check skipped (ensure nsfw-service is running on 5001): {e}")
 

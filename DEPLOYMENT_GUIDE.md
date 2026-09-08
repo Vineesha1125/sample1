@@ -8,11 +8,12 @@ This document contains everything the DevOps / SysAdmin team needs to deploy the
 
 The solution consists of two components:
 1. **Odoo 19 Backend with Custom Modules**:
-   - `forum_content_moderation`: Handles text moderation (toxic, insult, profanity via Detoxify; illegal keyword + semantic zero-shot classification via BART-large-MNLI) and image moderation coordination.
+   - `forum_content_moderation`: Handles text moderation (toxic, insult, profanity, threat, and identity attack detection via Detoxify; prohibited illegal keyword detection via word-boundary regex) and image moderation coordination.
    - `custom_forum_api`: Handles user-facing redirect notifications on the forum frontend when posts are placed in `pending` (Waiting Validation).
 2. **NSFW Image Detection Microservice** (`nsfw-service`):
    - Node.js Express service running TensorFlow.js + NSFWJS on port `5001`.
    - Endpoint: `POST /check-image` (multipart/form-data with field `image`).
+   - Distinguishes explicit adult content (`Porn`, `Hentai`) from safe categories (`Neutral`, `Drawing`) and suggestive content (`Sexy`).
 
 ---
 
@@ -21,13 +22,13 @@ The solution consists of two components:
 ### A. Python Dependencies (Odoo Environment)
 Add these to your production Odoo Python environment / Dockerfile:
 ```bash
-pip install torch transformers detoxify requests
+pip install torch detoxify requests
 ```
 
 ### B. Pre-caching HuggingFace Model Weights (Critical for Docker / CI/CD)
-To prevent the container from downloading weights (~2GB) on the first user post or failing in air-gapped networks, pre-warm the HuggingFace cache during Docker build:
+To prevent the container from downloading weights on the first user post or failing in air-gapped networks, pre-warm the HuggingFace cache during Docker build:
 ```dockerfile
-RUN python3 -c "from detoxify import Detoxify; Detoxify('original'); from transformers import pipeline; pipeline('zero-shot-classification', model='facebook/bart-large-mnli')"
+RUN python3 -c "from detoxify import Detoxify; Detoxify('original')"
 ```
 This ensures model weights are baked into `/root/.cache/huggingface` or the application user's home directory.
 
@@ -137,5 +138,5 @@ server {
 | `forum_content_moderation.odoo_base_url` | `http://localhost:8069` | Internal base URL for resolving external image links |
 | `forum_content_moderation.text_block_threshold` | `0.85` | Toxicity score above which post is held in pending |
 | `forum_content_moderation.text_review_threshold` | `0.70` | Borderline toxicity threshold |
-| `forum_content_moderation.image_block_threshold` | `0.75` | NSFW score above which post is held in pending |
-| `forum_content_moderation.image_review_threshold` | `0.60` | Borderline NSFW threshold |
+| `forum_content_moderation.image_block_threshold` | `0.75` | Explicit adult score (Porn/Hentai) above which post is held in pending |
+| `forum_content_moderation.image_review_threshold` | `0.50` | Borderline adult score threshold |

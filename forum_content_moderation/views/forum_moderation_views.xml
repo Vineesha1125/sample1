@@ -1,16 +1,45 @@
 <odoo>
 
+    <!-- Moderation Form View Inheritance with Approve and Reject Action Buttons -->
+    <record id="forum_post_view_form_moderation_inherit" model="ir.ui.view">
+        <field name="name">forum.post.view.form.moderation.inherit</field>
+        <field name="model">forum.post</field>
+        <field name="inherit_id" ref="website_forum.forum_post_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//sheet" position="before">
+                <header>
+                    <button name="action_approve_moderation"
+                            string="Approve &amp; Post"
+                            type="object"
+                            class="btn-success"
+                            invisible="state == 'active'"/>
+                    <button name="action_reject_moderation"
+                            string="Reject (Offensive)"
+                            type="object"
+                            class="btn-danger"
+                            invisible="state == 'offensive'"/>
+                    <field name="state" widget="statusbar" statusbar_visible="pending,flagged,active,offensive"/>
+                </header>
+            </xpath>
+            <xpath expr="//field[@name='state']" position="after">
+                <field name="moderation_reason" readonly="1" invisible="not moderation_reason"/>
+            </xpath>
+        </field>
+    </record>
+
     <record id="forum_post_moderation_search" model="ir.ui.view">
         <field name="name">forum.post.moderation.search</field>
         <field name="model">forum.post</field>
         <field name="arch" type="xml">
             <search string="Moderation Search">
                 <field name="name"/>
-                <filter string="Offensive (Blocked)" name="offensive" domain="[('state','=','offensive')]"/>
+                <filter string="Pending Approval" name="pending" domain="[('state','=','pending')]"/>
                 <filter string="Flagged (Review)" name="flagged" domain="[('state','=','flagged')]"/>
+                <filter string="Offensive (Blocked)" name="offensive" domain="[('state','=','offensive')]"/>
                 <filter string="Published (Active)" name="active_state" domain="[('state','=','active')]"/>
                 <separator/>
-                <filter string="Blocked or Flagged" name="blocked_or_flagged" domain="[('state','in',['offensive','flagged'])]"/>
+                <filter string="Awaiting Decision" name="awaiting_decision" domain="[('state','in',['pending','flagged'])]"/>
+                <filter string="Blocked or Flagged" name="blocked_or_flagged" domain="[('state','in',['pending','flagged','offensive'])]"/>
                 <separator/>
                 <filter string="Group by Status" name="group_state" context="{'group_by':'state'}"/>
                 <filter string="Group by Creation Date" name="group_date" context="{'group_by':'create_date:day'}"/>
@@ -44,7 +73,7 @@
         <field name="res_model">forum.post</field>
         <field name="view_mode">graph,pivot,list,form</field>
         <field name="search_view_id" ref="forum_post_moderation_search"/>
-        <field name="context">{'search_default_blocked_or_flagged': 1}</field>
+        <field name="context">{'search_default_awaiting_decision': 1}</field>
     </record>
 
     <menuitem id="menu_forum_moderation_root"
