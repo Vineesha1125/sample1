@@ -1,0 +1,19 @@
+<odoo>
+    <template id="new_question_moderation_notice" inherit_id="website_forum.new_question">
+        <xpath expr="//form" position="before">
+            <div t-if="request.httprequest.args.get('moderation_notice') == 'blocked'"
+                 class="alert alert-danger" role="alert">
+                Your post could not be published because it violates our content policy.
+                Please review our community guidelines and try again.
+            </div>
+            <div t-if="request.httprequest.args.get('moderation_notice') == 'flagged'"
+                 class="alert alert-warning" role="alert">
+                Your post was submitted and is pending moderator review before it becomes visible.
+            </div>
+            <div t-if="request.httprequest.args.get('moderation_notice') == 'pending'"
+                 class="alert alert-warning" role="alert">
+                Your post has been submitted and is waiting for administrator approval before it becomes visible.
+            </div>
+        </xpath>
+    </template>
+</odoo>

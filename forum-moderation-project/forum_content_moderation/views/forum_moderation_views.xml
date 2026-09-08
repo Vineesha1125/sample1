@@ -1,0 +1,116 @@
+<odoo>
+
+    <!-- Moderation Form View Inheritance with Approve and Reject Action Buttons -->
+    <record id="forum_post_view_form_moderation_inherit" model="ir.ui.view">
+        <field name="name">forum.post.view.form.moderation.inherit</field>
+        <field name="model">forum.post</field>
+        <field name="inherit_id" ref="website_forum.forum_post_view_form"/>
+        <field name="arch" type="xml">
+            <xpath expr="//sheet" position="before">
+                <header>
+                    <button name="action_approve_moderation"
+                            string="Approve &amp; Post"
+                            type="object"
+                            class="btn-success"
+                            invisible="state == 'active'"/>
+                    <button name="action_reject_moderation"
+                            string="Reject (Offensive)"
+                            type="object"
+                            class="btn-danger"
+                            invisible="state == 'offensive'"/>
+                    <field name="state" widget="statusbar" statusbar_visible="pending,flagged,active,offensive"/>
+                </header>
+            </xpath>
+            <xpath expr="//field[@name='state']" position="after">
+                <field name="moderation_reason" readonly="1" invisible="not moderation_reason"/>
+            </xpath>
+        </field>
+    </record>
+
+    <record id="forum_post_moderation_search" model="ir.ui.view">
+        <field name="name">forum.post.moderation.search</field>
+        <field name="model">forum.post</field>
+        <field name="arch" type="xml">
+            <search string="Moderation Search">
+                <field name="name"/>
+                <filter string="Pending Approval" name="pending" domain="[('state','=','pending')]"/>
+                <filter string="Flagged (Review)" name="flagged" domain="[('state','=','flagged')]"/>
+                <filter string="Offensive (Blocked)" name="offensive" domain="[('state','=','offensive')]"/>
+                <filter string="Published (Active)" name="active_state" domain="[('state','=','active')]"/>
+                <separator/>
+                <filter string="Awaiting Decision" name="awaiting_decision" domain="[('state','in',['pending','flagged'])]"/>
+                <filter string="Blocked or Flagged" name="blocked_or_flagged" domain="[('state','in',['pending','flagged','offensive'])]"/>
+                <separator/>
+                <filter string="Group by Status" name="group_state" context="{'group_by':'state'}"/>
+                <filter string="Group by Creation Date" name="group_date" context="{'group_by':'create_date:day'}"/>
+            </search>
+        </field>
+    </record>
+
+    <record id="view_forum_post_moderation_graph" model="ir.ui.view">
+        <field name="name">forum.post.moderation.graph</field>
+        <field name="model">forum.post</field>
+        <field name="arch" type="xml">
+            <graph string="Moderation Overview" type="bar">
+                <field name="state" type="row"/>
+            </graph>
+        </field>
+    </record>
+
+    <record id="view_forum_post_moderation_pivot" model="ir.ui.view">
+        <field name="name">forum.post.moderation.pivot</field>
+        <field name="model">forum.post</field>
+        <field name="arch" type="xml">
+            <pivot string="Moderation Overview">
+                <field name="create_date" interval="day" type="row"/>
+                <field name="state" type="col"/>
+            </pivot>
+        </field>
+    </record>
+
+    <record id="action_forum_moderation_dashboard" model="ir.actions.act_window">
+        <field name="name">Forum Moderation Dashboard</field>
+        <field name="res_model">forum.post</field>
+        <field name="view_mode">graph,pivot,list,form</field>
+        <field name="search_view_id" ref="forum_post_moderation_search"/>
+        <field name="context">{'search_default_awaiting_decision': 1}</field>
+    </record>
+
+    <menuitem id="menu_forum_moderation_root"
+              name="Forum Moderation"
+              sequence="90"/>
+
+    <menuitem id="menu_forum_moderation_dashboard"
+              name="Dashboard"
+              parent="menu_forum_moderation_root"
+              action="action_forum_moderation_dashboard"
+              sequence="10"/>
+
+    <!-- Moderation feedback (override) log -->
+    <record id="view_forum_moderation_feedback_list" model="ir.ui.view">
+        <field name="name">forum.moderation.feedback.list</field>
+        <field name="model">forum.moderation.feedback</field>
+        <field name="arch" type="xml">
+            <list string="Moderation Overrides">
+                <field name="create_date"/>
+                <field name="post_id"/>
+                <field name="original_state"/>
+                <field name="corrected_state"/>
+                <field name="corrected_by"/>
+            </list>
+        </field>
+    </record>
+
+    <record id="action_forum_moderation_feedback" model="ir.actions.act_window">
+        <field name="name">Moderation Overrides</field>
+        <field name="res_model">forum.moderation.feedback</field>
+        <field name="view_mode">list,form</field>
+    </record>
+
+    <menuitem id="menu_forum_moderation_feedback"
+              name="Overrides"
+              parent="menu_forum_moderation_root"
+              action="action_forum_moderation_feedback"
+              sequence="20"/>
+
+</odoo>
